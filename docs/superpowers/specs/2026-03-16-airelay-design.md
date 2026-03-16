@@ -32,14 +32,16 @@ Handles all `/proxy/*` traffic. Stateless, horizontally scalable, zero managemen
 
 **Request flow:**
 1. Receive request with AIRelay key in `Authorization: Bearer air_sk_...` header
-2. Look up project + provider credential from Redis cache (fallback: Postgres)
-3. Check current spend against budget via Redis `GET spend:{project_id}`
-4. If budget exceeded and `hard_limit = true`: return `429` immediately — no tokens burned
+2. Look up project + provider credential from Redis cache (fallback: Postgres, SHA-256 key hash comparison)
+3. Read all active budgets for the project. For each: check `spend:{project_id}:{period_key}` against limit via Redis Lua script that atomically checks AND increments a reservation counter
+4. If any budget exceeded and `hard_limit = true`: return `429` immediately — no tokens burned, no reservation held
 5. Forward request to provider with real API key substituted
 6. Stream response back to client transparently (SSE pass-through)
-7. On stream close: read token counts from final chunk, compute `cost_usd`
-8. Push usage event to buffered Go channel (non-blocking)
-9. Background goroutine: atomic Redis `INCRBY spend:{project_id}`, batch-write to Postgres
+7. On stream close: read exact token counts from final chunk (OpenAI `usage` field, Anthropic `message_stop` event, Gemini `usageMetadata` field), compute `cost_usd`
+8. Correct the reservation: `INCRBYFLOAT spend:{project_id}:{period_key}` by actual cost (reservation from step 3 used `0` — actual deduction happens here atomically)
+9. Push usage event to buffered Go channel (non-blocking), batch-write to Postgres every 1s or 100 events
+
+**Concurrency model:** budget check and spend increment are two separate operations — there is an inherent race window equal to the duration of in-flight requests. Under high concurrency a project may marginally exceed its budget by the cost of concurrent in-flight requests. This is documented behavior, not a bug. For the use cases AIRelay targets (developer cost protection, not financial-grade enforcement), this margin is acceptable and bounded.
 
 ### 3.2 Management API
 Handles all `/v1/*` traffic. Dashboard backend, authentication, project/budget/key management.
@@ -59,20 +61,30 @@ Client → Cloudflare (DDoS, TLS, edge routing)
 
 **Redis is the enforcement layer. Postgres is the source of truth.**
 
-- Every proxied request does a synchronous `INCRBY` on Redis before returning — always current.
+**Spend key structure:** `spend:{project_id}:{period_key}` where `period_key` is `daily:{YYYY-MM-DD}` or `monthly:{YYYY-MM}`. Keys are naturally scoped to their period — no reset job needed. A new day/month = a new key. Expired keys (prior periods) are cleaned up by a daily TTL sweep job.
+
+- Every proxied request does a synchronous `INCRBYFLOAT` on the period-scoped Redis key — always current for the active period.
 - Usage events are written to a buffered in-memory channel (50k cap), flushed to Postgres every 1 second or 100 events, whichever comes first.
-- On Redis cold start: rebuild spend counters from `SELECT project_id, SUM(cost_usd) FROM usage_events WHERE period = current GROUP BY project_id`. Completes in < 500ms.
-- Reconciliation job runs every 60s: compares Redis spend to Postgres SUM. Drift > 5% corrects Redis and emits a metric. Drift > 20% triggers an alert.
+- On Redis cold start: rebuild spend counters from `SELECT project_id, SUM(cost_usd) FROM usage_events WHERE created_at >= period_start GROUP BY project_id`. Completes in < 500ms.
+- Reconciliation job runs every 60s: compares Redis spend to Postgres SUM for the current period. Drift > 5% corrects Redis and emits a metric. Drift > 20% triggers an alert.
 
 ### 4.1 Fail-Open Design
 
-If Redis is unreachable, requests pass through without budget enforcement. Usage is still captured:
-1. Response is still buffered and tokens are still counted
-2. Usage event queued to dead letter queue (in-memory, 50k cap)
-3. Dead letter queue retries with exponential backoff: 5s → 30s → 5min
-4. On recovery: DLQ flushes to Postgres, Redis rebuilds from Postgres
+If Redis is unreachable, requests pass through without budget enforcement. Usage is still captured with a two-tier fallback:
 
-Events written during fail-open are flagged with `fail_open = true`. Budget may be temporarily exceeded during infrastructure failures — disclosed in ToS.
+**Tier 1 — Redis down, Postgres available (common case):**
+1. Response is buffered and tokens are counted as normal
+2. Usage event written directly to Postgres (bypassing Redis and the async channel)
+3. Event flagged with `fail_open = true`
+4. On Redis recovery: rebuild spend keys from Postgres SUM — no data loss
+
+**Tier 2 — Both Redis and Postgres unreachable (rare):**
+1. Usage event queued to in-memory dead letter queue (50k cap)
+2. DLQ retries Postgres write with exponential backoff: 5s → 30s → 5min
+3. On Postgres recovery: DLQ flushes, then Redis rebuilds from Postgres
+4. If proxy restarts while DLQ has pending events: events are lost. This is the irreducible risk of in-process buffering and is disclosed in ToS.
+
+Budget may be temporarily exceeded during infrastructure failures. The Tier 1 path (Redis only down) produces zero data loss. The Tier 2 path (both down) has a bounded loss window equal to the time between the last successful Postgres flush and the process restart.
 
 ---
 
@@ -102,7 +114,7 @@ Events written during fail-open are flagged with `fail_open = true`. Budget may 
 |---|---|---|
 | id | uuid PK | |
 | project_id | uuid FK → projects | |
-| key_hash | text | bcrypt, never stored plain |
+| key_hash | text | SHA-256, never stored plain — bcrypt is too slow for the hot path lookup |
 | key_prefix | text | `air_sk_ab12...` display only |
 | name | text | |
 | last_used_at | timestamptz | nullable |
@@ -127,6 +139,8 @@ Events written during fail-open are flagged with `fail_open = true`. Budget may 
 | period | enum | daily / monthly |
 | hard_limit | bool | block at 100% or alert only |
 | created_at | timestamptz | |
+
+**Constraint:** `UNIQUE(project_id, period)` — one budget per period type per project. A project may have both a daily and a monthly budget simultaneously. The proxy enforces all active budgets — if either is exceeded with `hard_limit = true`, the request is blocked.
 
 ### alert_thresholds
 | Column | Type | Notes |
@@ -252,6 +266,8 @@ All paths under each prefix pass through unchanged. SSE streaming is transparent
 - Team features (seats, roles, shared projects)
 - Billing and plan management (Stripe)
 - Reconciliation and operational reliability jobs
+
+**Note on self-hosted deployments:** The OSS proxy binary does not include the reconciliation job (Redis↔Postgres drift correction) or the alert delivery system. Self-hosters operate without drift detection. This is an accepted and documented trade-off — the hosted product's reliability layer is part of the paid value proposition.
 
 ---
 
