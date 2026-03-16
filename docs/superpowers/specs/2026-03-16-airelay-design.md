@@ -252,11 +252,16 @@ All paths under each prefix pass through unchanged. SSE streaming is transparent
 
 ## 8. Open Core Split
 
-**Open source (`github.com/airelay/proxy`):**
+**Source-available under BSL (`github.com/airelay/proxy`):**
 - Proxy engine binary
 - Token counting logic per provider
 - Model pricing sync job
 - Docker image for self-hosting
+
+**License: Business Source License (BSL 1.1)**
+Source code is publicly readable and auditable. Personal and non-commercial use is permitted. Running a competing commercial managed service using this code is explicitly prohibited. Converts to Apache 2.0 after 4 years.
+
+**Why BSL over Apache 2.0:** Developers routing production AI traffic through AIRelay need to trust what the proxy does with their requests — source visibility provides that trust. BSL gives us that benefit without handing a free business to competitors. This is the same approach used by HashiCorp (Terraform), Sentry, and MariaDB.
 
 **Private (hosted product):**
 - Dashboard (cost charts, budget UI, usage breakdowns)
@@ -267,7 +272,7 @@ All paths under each prefix pass through unchanged. SSE streaming is transparent
 - Billing and plan management (Stripe)
 - Reconciliation and operational reliability jobs
 
-**Note on self-hosted deployments:** The OSS proxy binary does not include the reconciliation job (Redis↔Postgres drift correction) or the alert delivery system. Self-hosters operate without drift detection. This is an accepted and documented trade-off — the hosted product's reliability layer is part of the paid value proposition.
+**Note on self-hosted deployments:** The BSL proxy binary does not include the reconciliation job (Redis↔Postgres drift correction) or the alert delivery system. Self-hosters operate without drift detection. This is an accepted and documented trade-off — the hosted product's reliability layer is part of the paid value proposition.
 
 ---
 
