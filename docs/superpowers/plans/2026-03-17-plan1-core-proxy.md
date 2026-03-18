@@ -1684,6 +1684,8 @@ func (b *BudgetChecker) rebuildFromDB(ctx context.Context, projectID uuid.UUID, 
 		periodStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	case models.PeriodMonthly:
 		periodStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	default:
+		return 0, fmt.Errorf("unknown budget period: %s", period)
 	}
 	var spend float64
 	err := b.db.QueryRow(ctx,
@@ -1966,6 +1968,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/airelay/airelay/internal/models"
@@ -2049,7 +2052,7 @@ func Forward(
 
 	result := &ForwardResult{StatusCode: resp.StatusCode}
 
-	if resp.Header.Get("Content-Type") == "text/event-stream" {
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		result.Usage = streamSSE(w, resp.Body, provider, &result.AnthropicInputTokens)
 	} else {
 		io.Copy(w, resp.Body)
