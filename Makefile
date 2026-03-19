@@ -18,8 +18,8 @@ test:
 	go test ./...
 
 build:
-	go build -o proxy ./cmd/proxy/
-	go build -o api ./cmd/api/
+	go build -o bin/proxy ./cmd/proxy/
+	go build -o bin/api ./cmd/api/
 
 seed:
 	go run ./cmd/seed/

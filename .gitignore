@@ -6,8 +6,7 @@
 .env.*
 
 # Build output
-/proxy
-/api
+/bin/
 *.test
 
 # Go
