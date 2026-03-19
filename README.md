@@ -174,12 +174,11 @@ curl http://localhost:8081/proxy/openai/v1/chat/completions \
 
 ## Automated Tests
 
+### Unit tests (no Docker required)
+
 ```bash
-export $(cat .env | xargs)
 make test
 ```
-
-Current coverage (30 tests, no external dependencies required):
 
 | Package | Tests | Covers |
 |---|---|---|
@@ -189,7 +188,27 @@ Current coverage (30 tests, no external dependencies required):
 | `internal/cost` | 2 | Cost calculation from token counts |
 | `proxy` | 9 | Key hashing/generation, spend key format, handler auth/routing |
 
-**Known gap:** No integration tests for DB/Redis-dependent paths (key resolution, budget enforcement write path, usage event persistence). These require a live database and will be added in Plan 2.
+### Integration tests (requires Docker)
+
+Requires `make dev` and `make migrate-up` to be run first.
+
+```bash
+export $(cat .env | xargs)
+make test-integration
+```
+
+| Test | Covers |
+|---|---|
+| `TestIntegration_KeyResolver` | DB key lookup, credential decryption, Redis cache hit on second call |
+| `TestIntegration_BudgetEnforcement` | Budget check under/over limit with real Redis spend keys |
+| `TestIntegration_UsageEventWrite` | `LogDirect` write to partitioned `usage_events` table, verify row exists |
+
+### Run everything
+
+```bash
+export $(cat .env | xargs)
+make test-all   # unit tests + integration tests
+```
 
 ---
 
@@ -201,7 +220,9 @@ Current coverage (30 tests, no external dependencies required):
 | `make stop` | `docker compose down` | Stop infrastructure |
 | `make migrate-up` | `goose ... up` | Apply all pending migrations |
 | `make migrate-down` | `goose ... down` | Roll back one migration |
-| `make test` | `go test ./...` | Run all unit tests |
+| `make test` | `go test ./...` | Run unit tests (no Docker needed) |
+| `make test-integration` | `go test -tags integration ./...` | Run integration tests (requires Docker) |
+| `make test-all` | unit + integration | Run everything |
 | `make build` | `go build -o bin/...` | Build proxy and api binaries to `bin/` |
 | `make proxy` | `go run ./cmd/proxy/` | Run proxy in dev mode |
 | `make seed` | `go run ./cmd/seed/` | Seed local dev data |

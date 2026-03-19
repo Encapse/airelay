@@ -1,4 +1,4 @@
-.PHONY: dev stop migrate-up migrate-down test build seed proxy lint
+.PHONY: dev stop migrate-up migrate-down test test-integration test-all build seed proxy lint
 
 dev:
 	docker compose up -d
@@ -16,6 +16,15 @@ migrate-down:
 
 test:
 	go test ./...
+
+test-integration:
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is not set. Run: export $$(cat .env | xargs)"; exit 1)
+	go test -tags integration -v ./...
+
+test-all:
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is not set. Run: export $$(cat .env | xargs)"; exit 1)
+	go test ./...
+	go test -tags integration -v ./...
 
 build:
 	go build -o bin/proxy ./cmd/proxy/
