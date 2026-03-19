@@ -7,9 +7,11 @@ stop:
 	docker compose down
 
 migrate-up:
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is not set. Run: export $$(cat .env | xargs)"; exit 1)
 	goose -dir db/migrations postgres "$(DATABASE_URL)" up
 
 migrate-down:
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is not set. Run: export $$(cat .env | xargs)"; exit 1)
 	goose -dir db/migrations postgres "$(DATABASE_URL)" down
 
 test:
