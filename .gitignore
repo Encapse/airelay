@@ -1,0 +1,15 @@
+# Worktrees
+.worktrees/
+
+# Environment
+.env
+.env.*
+
+# Build output
+/proxy
+/api
+*.test
+
+# Go
+vendor/
+tmp/
