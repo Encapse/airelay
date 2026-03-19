@@ -33,3 +33,8 @@ func TestWrongKeyFails(t *testing.T) {
 	_, err := encrypt.Decrypt(key2, ciphertext)
 	require.Error(t, err)
 }
+
+func TestEncrypt_WrongKeyLength(t *testing.T) {
+	_, err := encrypt.Encrypt("tooshort", "payload")
+	require.Error(t, err)
+}

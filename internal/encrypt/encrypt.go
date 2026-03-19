@@ -17,8 +17,11 @@ func deriveKey(key string) []byte {
 }
 
 // Encrypt encrypts plaintext with AES-256-GCM using a random nonce.
-// Returns base64(nonce + ciphertext).
+// Returns base64(nonce + ciphertext). Key must be at least 16 characters.
 func Encrypt(key, plaintext string) (string, error) {
+	if len(key) < 16 {
+		return "", fmt.Errorf("encryption key must be at least 16 characters")
+	}
 	block, err := aes.NewCipher(deriveKey(key))
 	if err != nil {
 		return "", fmt.Errorf("create cipher: %w", err)
