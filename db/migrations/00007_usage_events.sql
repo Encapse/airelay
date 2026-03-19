@@ -12,7 +12,8 @@ CREATE TABLE usage_events (
     status_code INTEGER NOT NULL DEFAULT 0,
     metadata JSONB,
     fail_open BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
 -- Create monthly partitions for 2026
@@ -42,4 +43,4 @@ CREATE TABLE usage_events_2026_12 PARTITION OF usage_events
     FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
 
 -- +goose Down
-DROP TABLE usage_events;
+DROP TABLE usage_events CASCADE;
