@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/airelay/airelay/proxy"
@@ -18,6 +19,7 @@ func TestHashKey(t *testing.T) {
 
 func TestGenerateKey(t *testing.T) {
 	full, prefix, hash := proxy.GenerateKey()
+	require.True(t, strings.HasPrefix(full, "air_sk_"), "key must start with air_sk_")
 	require.True(t, len(full) > 20)
 	require.True(t, len(full) >= 16)
 	require.Equal(t, full[:16], prefix)

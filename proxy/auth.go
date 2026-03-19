@@ -29,7 +29,9 @@ func HashKey(key string) string {
 // Returns (fullKey, displayPrefix, hash).
 func GenerateKey() (string, string, string) {
 	b := make([]byte, 24)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
 	full := keyPrefix + hex.EncodeToString(b)
 	prefix := full[:16]
 	return full, prefix, HashKey(full)
