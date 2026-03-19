@@ -33,33 +33,32 @@ const (
 )
 
 type User struct {
-	ID                   uuid.UUID
-	Email                string
-	PasswordHash         string
-	Plan                 UserPlan
-	StripeCustomerID     *string
-	StripeSubscriptionID *string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	ID               uuid.UUID
+	Email            string
+	PasswordHash     string
+	Plan             UserPlan
+	StripeCustomerID *string
+	CreatedAt        time.Time
 }
 
 type Project struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Name      string
-	Slug      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Name       string
+	Slug       string
+	CreatedAt  time.Time
+	ArchivedAt *time.Time
 }
 
 type APIKey struct {
-	ID        uuid.UUID
-	ProjectID uuid.UUID
-	KeyHash   string
-	KeyPrefix string
-	Name      string
-	RevokedAt *time.Time
-	CreatedAt time.Time
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	KeyHash    string
+	KeyPrefix  string
+	Name       string
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
 }
 
 type ProviderCredential struct {
@@ -81,11 +80,12 @@ type Budget struct {
 }
 
 type AlertThreshold struct {
-	ID           uuid.UUID
-	ProjectID    uuid.UUID
-	ThresholdPct int
-	Channel      string
-	CreatedAt    time.Time
+	ID               uuid.UUID
+	BudgetID         uuid.UUID
+	ThresholdPct     int
+	NotifyEmail      bool
+	NotifyWebhookURL *string
+	LastFiredAt      *time.Time
 }
 
 type UsageEvent struct {
@@ -105,12 +105,11 @@ type UsageEvent struct {
 }
 
 type ModelPricing struct {
-	ID              uuid.UUID
 	Provider        string
 	Model           string
 	InputCostPer1k  float64
 	OutputCostPer1k float64
+	SyncedFrom      string
 	ManualOverride  bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	LastSyncedAt    time.Time
 }
