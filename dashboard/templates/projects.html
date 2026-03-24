@@ -1,0 +1,61 @@
+{{template "layout" .}}
+{{define "title"}}Projects — AIRelay{{end}}
+{{define "content"}}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+  <h1 style="font-size:20px; font-weight:700;">Projects</h1>
+  <button class="btn btn-primary btn-sm" onclick="document.getElementById('new-project-form').style.display='block'">+ New project</button>
+</div>
+
+<div id="new-project-form" class="card" style="display:none; margin-bottom:16px;">
+  <h3 style="margin-bottom:12px; font-size:15px;">Create project</h3>
+  <div class="form-group">
+    <label>Name</label>
+    <input type="text" id="new-project-name" placeholder="My AI app">
+  </div>
+  <div id="create-error" class="error" style="display:none;"></div>
+  <button class="btn btn-primary btn-sm" onclick="createProject()">Create</button>
+</div>
+
+<div id="projects-list">
+  <p style="color:#6b7280;">Loading projects...</p>
+</div>
+
+<script>
+var token = localStorage.getItem('air_token');
+if (!token) { window.location = '/dashboard/login'; }
+
+async function loadProjects() {
+  var resp = await fetch('/v1/projects', {headers: {'Authorization': 'Bearer ' + token}});
+  if (resp.status === 401) { window.location = '/dashboard/login'; return; }
+  var data = await resp.json();
+  var el = document.getElementById('projects-list');
+  if (!data.projects.length) {
+    el.innerHTML = '<p style="color:#6b7280;">No projects yet. Create one above.</p>';
+    return;
+  }
+  el.innerHTML = data.projects.map(function(p) {
+    return '<div class="card" style="display:flex;align-items:center;justify-content:space-between;">' +
+      '<div><a href="/dashboard/projects/' + p.id + '" style="font-weight:600;text-decoration:none;color:#2563eb;">' + p.name + '</a>' +
+      '<div style="font-size:12px;color:#6b7280;margin-top:2px;">' + p.slug + '</div></div>' +
+      '<a href="/dashboard/projects/' + p.id + '" class="btn btn-primary btn-sm">Open</a></div>';
+  }).join('');
+}
+
+async function createProject() {
+  var name = document.getElementById('new-project-name').value;
+  var err = document.getElementById('create-error');
+  err.style.display = 'none';
+  var resp = await fetch('/v1/projects', {
+    method: 'POST',
+    headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name})
+  });
+  var data = await resp.json();
+  if (!resp.ok) { err.textContent = data.error; err.style.display = 'block'; return; }
+  document.getElementById('new-project-form').style.display = 'none';
+  loadProjects();
+}
+
+loadProjects();
+</script>
+{{end}}

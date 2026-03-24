@@ -1,0 +1,119 @@
+{{template "layout" .}}
+{{define "title"}}Project — AIRelay{{end}}
+{{define "content"}}
+<div style="margin-bottom:20px;">
+  <a href="/dashboard/projects" style="color:#6b7280; font-size:13px;">← Projects</a>
+  <h1 id="project-name" style="font-size:20px; font-weight:700; margin-top:8px;">Loading...</h1>
+</div>
+
+<div id="budget-section" class="card" style="margin-bottom:16px;">
+  <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">Budget</h3>
+  <div id="budget-daily"></div>
+  <div id="budget-monthly" style="margin-top:12px;"></div>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">API Keys</h3>
+  <div id="keys-list"></div>
+  <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="createKey()">+ New key</button>
+  <div id="new-key-result" style="margin-top:10px; font-size:13px; word-break:break-all;"></div>
+</div>
+
+<div class="card">
+  <h3 style="font-size:15px; font-weight:600; margin-bottom:12px;">Recent Usage</h3>
+  <div id="usage-table"><p style="color:#6b7280;">Loading...</p></div>
+</div>
+
+<script>
+var token = localStorage.getItem('air_token');
+if (!token) { window.location = '/dashboard/login'; }
+var projectID = window.location.pathname.split('/').pop();
+
+async function apiFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({'Authorization': 'Bearer ' + token}, opts.headers || {});
+  var resp = await fetch(path, opts);
+  if (resp.status === 401) { window.location = '/dashboard/login'; }
+  return resp;
+}
+
+async function loadProject() {
+  var resp = await apiFetch('/v1/projects/' + projectID);
+  var p = await resp.json();
+  document.getElementById('project-name').textContent = p.name;
+}
+
+async function loadBudget() {
+  var resp = await apiFetch('/v1/projects/' + projectID + '/budget');
+  var data = await resp.json();
+  var budgets = data.budgets || [];
+  ['daily','monthly'].forEach(function(period) {
+    var b = budgets.find(function(x){ return x.period === period; });
+    var el = document.getElementById('budget-' + period);
+    if (!b) { el.innerHTML = '<p style="color:#6b7280;font-size:13px;">No ' + period + ' budget set.</p>'; return; }
+    var pct = b.amount_usd > 0 ? Math.min((b.current_spend / b.amount_usd)*100, 100) : 0;
+    var fillClass = pct >= 90 ? 'danger' : pct >= 75 ? 'warning' : '';
+    el.innerHTML = '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">' +
+      '<span style="text-transform:capitalize;font-weight:600;">' + period + ' budget</span>' +
+      '<span>$' + b.current_spend.toFixed(4) + ' / $' + b.amount_usd.toFixed(2) + '</span></div>' +
+      '<div class="progress-bar"><div class="progress-fill ' + fillClass + '" style="width:' + pct.toFixed(1) + '%;"></div></div>';
+  });
+  setTimeout(loadBudget, 30000);
+}
+
+async function loadKeys() {
+  var resp = await apiFetch('/v1/projects/' + projectID + '/keys');
+  var data = await resp.json();
+  var el = document.getElementById('keys-list');
+  if (!data.keys.length) { el.innerHTML = '<p style="color:#6b7280;font-size:13px;">No keys yet.</p>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th></th></tr></thead><tbody>' +
+    data.keys.filter(function(k){ return !k.revoked_at; }).map(function(k) {
+      return '<tr><td>' + k.name + '</td><td><code>' + k.key_prefix + '...</code></td>' +
+        '<td>' + new Date(k.created_at).toLocaleDateString() + '</td>' +
+        '<td><button class="btn btn-danger btn-sm" onclick="revokeKey(\'' + k.id + '\')">Revoke</button></td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+async function createKey() {
+  var name = prompt('Key name (e.g. "production")');
+  if (!name) return;
+  var resp = await apiFetch('/v1/projects/' + projectID + '/keys', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name})
+  });
+  var data = await resp.json();
+  if (resp.ok) {
+    document.getElementById('new-key-result').innerHTML =
+      '<strong>Copy this key now — it will not be shown again:</strong><br>' +
+      '<code style="background:#f3f4f6;padding:6px 10px;border-radius:4px;display:block;margin-top:6px;">' + data.key + '</code>';
+    loadKeys();
+  }
+}
+
+async function revokeKey(keyId) {
+  if (!confirm('Revoke this key? All requests using it will fail immediately.')) return;
+  await apiFetch('/v1/projects/' + projectID + '/keys/' + keyId, {method: 'DELETE'});
+  loadKeys();
+}
+
+async function loadUsage() {
+  var resp = await apiFetch('/v1/projects/' + projectID + '/usage?limit=20');
+  var data = await resp.json();
+  var el = document.getElementById('usage-table');
+  if (!data.events.length) { el.innerHTML = '<p style="color:#6b7280;font-size:13px;">No usage events yet.</p>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Model</th><th>Tokens</th><th>Cost</th><th>Status</th><th>Time</th></tr></thead><tbody>' +
+    data.events.map(function(e) {
+      var cost = e.cost_usd != null ? '$' + e.cost_usd.toFixed(6) : '—';
+      return '<tr><td>' + e.model + '</td><td>' + (e.prompt_tokens + e.completion_tokens) + '</td>' +
+        '<td>' + cost + '</td><td>' + e.status_code + '</td>' +
+        '<td>' + new Date(e.created_at).toLocaleString() + '</td></tr>';
+    }).join('') + '</tbody></table>';
+}
+
+loadProject();
+loadBudget();
+loadKeys();
+loadUsage();
+</script>
+{{end}}
