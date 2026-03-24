@@ -1,3 +1,6 @@
+# Internal docs (plans, specs — not for public repo)
+docs/
+
 # Worktrees
 .worktrees/
 
