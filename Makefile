@@ -1,4 +1,4 @@
-.PHONY: dev stop migrate-up migrate-down test test-integration test-all build seed proxy lint
+.PHONY: dev stop migrate-up migrate-down test test-integration test-all build seed proxy api lint
 
 dev:
 	docker compose up -d
@@ -35,6 +35,9 @@ seed:
 
 proxy:
 	go run ./cmd/proxy/
+
+api:
+	go run ./cmd/api/
 
 lint:
 	go vet ./...
