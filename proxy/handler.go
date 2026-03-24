@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/airelay/airelay/internal/cost"
 	"github.com/airelay/airelay/internal/models"
@@ -17,10 +18,11 @@ import (
 
 // Handler is the main proxy HTTP handler.
 type Handler struct {
-	resolver *KeyResolver
-	budgets  *BudgetChecker
-	logger   *Logger
-	db       *pgxpool.Pool
+	resolver     *KeyResolver
+	budgets      *BudgetChecker
+	logger       *Logger
+	db           *pgxpool.Pool
+	pricingCache sync.Map // map[string]*models.ModelPricing, keyed as "provider:model"
 }
 
 func NewHandler(db *pgxpool.Pool, rdb *redis.Client, encKey string) *Handler {
@@ -94,7 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if fwdResult.Usage != nil {
 		event.PromptTokens = fwdResult.Usage.PromptTokens
 		event.CompletionTokens = fwdResult.Usage.CompletionTokens
-		if pricing := h.lookupPricing(string(provider), model); pricing != nil {
+		if pricing := h.lookupPricing(r.Context(), string(provider), model); pricing != nil {
 			c := cost.Calculate(event.PromptTokens, event.CompletionTokens, pricing)
 			event.CostUSD = &c
 		}
@@ -127,17 +129,26 @@ func peekModel(r *http.Request) string {
 	return payload.Model
 }
 
-func (h *Handler) lookupPricing(provider, model string) *models.ModelPricing {
+// lookupPricing returns pricing for a provider+model, using an in-process cache
+// to avoid a Postgres query on every request. Cache is populated lazily and
+// cleared on process restart (pricing sync runs every 24h, so staleness is bounded).
+func (h *Handler) lookupPricing(ctx context.Context, provider, model string) *models.ModelPricing {
+	key := provider + ":" + model
+	if v, ok := h.pricingCache.Load(key); ok {
+		return v.(*models.ModelPricing)
+	}
 	var pricing models.ModelPricing
-	err := h.db.QueryRow(context.Background(),
+	err := h.db.QueryRow(ctx,
 		`SELECT input_cost_per_1k, output_cost_per_1k FROM model_pricing WHERE provider=$1 AND model=$2`,
 		provider, model,
 	).Scan(&pricing.InputCostPer1k, &pricing.OutputCostPer1k)
 	if err != nil {
+		h.pricingCache.Store(key, (*models.ModelPricing)(nil))
 		return nil
 	}
 	pricing.Provider = provider
 	pricing.Model = model
+	h.pricingCache.Store(key, &pricing)
 	return &pricing
 }
 

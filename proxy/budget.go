@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/airelay/airelay/internal/models"
@@ -70,9 +71,34 @@ func (b *BudgetChecker) CheckBudgets(ctx context.Context, projectID uuid.UUID) (
 }
 
 // RecordSpend adds cost to the Redis spend key for a given period.
+// Logs a warning if the increment fails so drift is visible in logs.
 func (b *BudgetChecker) RecordSpend(ctx context.Context, projectID uuid.UUID, period models.BudgetPeriod, costUSD float64) {
-	key := SpendKey(projectID, string(period), time.Now().UTC())
-	b.redis.IncrByFloat(ctx, key, costUSD)
+	now := time.Now().UTC()
+	key := SpendKey(projectID, string(period), now)
+	if err := b.redis.IncrByFloat(ctx, key, costUSD).Err(); err != nil {
+		log.Printf("WARN: RecordSpend failed for project %s period %s: %v", projectID, period, err)
+		return
+	}
+	// Set TTL if not already set (first write for this period).
+	ttl, err := b.redis.TTL(ctx, key).Result()
+	if err == nil && ttl < 0 {
+		b.redis.Expire(ctx, key, spendKeyTTL(string(period), now))
+	}
+}
+
+// spendKeyTTL returns how long a spend key should live in Redis.
+// Daily keys expire after 2 days; monthly keys expire on the 5th of the following month.
+func spendKeyTTL(period string, t time.Time) time.Duration {
+	switch period {
+	case "daily":
+		end := time.Date(t.Year(), t.Month(), t.Day()+2, 0, 0, 0, 0, time.UTC)
+		return time.Until(end)
+	case "monthly":
+		end := time.Date(t.Year(), t.Month()+1, 5, 0, 0, 0, 0, time.UTC)
+		return time.Until(end)
+	default:
+		return 7 * 24 * time.Hour
+	}
 }
 
 func (b *BudgetChecker) loadBudgets(ctx context.Context, projectID uuid.UUID) ([]models.Budget, error) {
@@ -107,7 +133,7 @@ func (b *BudgetChecker) getSpend(ctx context.Context, key string, projectID uuid
 	if err != nil {
 		return 0, err
 	}
-	b.redis.Set(ctx, key, spend, 0)
+	b.redis.Set(ctx, key, spend, spendKeyTTL(string(period), time.Now().UTC()))
 	return spend, nil
 }
 

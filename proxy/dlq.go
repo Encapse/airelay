@@ -54,7 +54,10 @@ func (d *DLQ) retryLoop() {
 		cancel()
 
 		d.mu.Lock()
-		d.queue = failed
+		// Preserve events enqueued while the retry was in flight by prepending
+		// failed events before any newly arrived events (d.queue[len(batch):]).
+		newlyEnqueued := d.queue[len(batch):]
+		d.queue = append(failed, newlyEnqueued...)
 		d.mu.Unlock()
 
 		if len(failed) > 0 {
