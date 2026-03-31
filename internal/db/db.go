@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,6 +16,12 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	}
 	cfg.MaxConns = 20
 	cfg.MinConns = 2
+	// Recycle connections after 30 minutes to avoid stale server-side state
+	// (prepared statement caches, role changes) without hammering reconnect overhead.
+	cfg.MaxConnLifetime = 30 * time.Minute
+	// Release idle connections after 5 minutes so the pool doesn't hold slots
+	// that Postgres could use for other clients during quiet periods.
+	cfg.MaxConnIdleTime = 5 * time.Minute
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
