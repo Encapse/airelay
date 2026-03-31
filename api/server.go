@@ -66,5 +66,11 @@ func NewServer(db *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) (*http.S
 		w.Write([]byte("ok"))
 	})
 
-	return &http.Server{Handler: mux}, mux
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}, mux
 }
