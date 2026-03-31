@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/airelay/airelay/internal/cost"
 	"github.com/airelay/airelay/internal/models"
@@ -72,6 +73,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap request body to 100 MiB to prevent memory exhaustion from huge payloads.
+	// Applied before peekModel so both reads (peek + forward) see the limit.
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+
 	// Read model from body before Forward consumes it
 	model := peekModel(r)
 	metadata := parseMetadata(r.Header.Get("X-AIRelay-Meta"))
@@ -129,26 +134,37 @@ func peekModel(r *http.Request) string {
 	return payload.Model
 }
 
+const pricingCacheTTL = 24 * time.Hour
+
+type cachedPricing struct {
+	pricing   *models.ModelPricing // nil means "not found"
+	expiresAt time.Time
+}
+
 // lookupPricing returns pricing for a provider+model, using an in-process cache
-// to avoid a Postgres query on every request. Cache is populated lazily and
-// cleared on process restart (pricing sync runs every 24h, so staleness is bounded).
+// with a 24-hour TTL. The pricing sync job also runs every 24h so staleness is
+// bounded to at most two cycles in the worst case.
 func (h *Handler) lookupPricing(ctx context.Context, provider, model string) *models.ModelPricing {
 	key := provider + ":" + model
 	if v, ok := h.pricingCache.Load(key); ok {
-		return v.(*models.ModelPricing)
+		c := v.(cachedPricing)
+		if time.Now().Before(c.expiresAt) {
+			return c.pricing
+		}
 	}
 	var pricing models.ModelPricing
 	err := h.db.QueryRow(ctx,
 		`SELECT input_cost_per_1k, output_cost_per_1k FROM model_pricing WHERE provider=$1 AND model=$2`,
 		provider, model,
 	).Scan(&pricing.InputCostPer1k, &pricing.OutputCostPer1k)
+	exp := time.Now().Add(pricingCacheTTL)
 	if err != nil {
-		h.pricingCache.Store(key, (*models.ModelPricing)(nil))
+		h.pricingCache.Store(key, cachedPricing{pricing: nil, expiresAt: exp})
 		return nil
 	}
 	pricing.Provider = provider
 	pricing.Model = model
-	h.pricingCache.Store(key, &pricing)
+	h.pricingCache.Store(key, cachedPricing{pricing: &pricing, expiresAt: exp})
 	return &pricing
 }
 
