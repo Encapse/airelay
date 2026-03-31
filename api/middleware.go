@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/airelay/airelay/internal/models"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 )
 
 type contextKey string
@@ -94,6 +97,65 @@ func Limits(plan models.UserPlan) PlanLimits {
 		return PlanLimits{MaxProjects: 0, MaxKeys: 0, HistoryDays: -1}
 	default: // free
 		return PlanLimits{MaxProjects: 1, MaxKeys: 1, HistoryDays: 7}
+	}
+}
+
+// ipLimiterEntry combines a rate limiter with the last time it was accessed,
+// so the cleanup goroutine can evict stale entries without leaking memory.
+type ipLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// IPRateLimit returns middleware that limits requests per remote IP.
+// r is the sustained rate (e.g. rate.Every(12*time.Second) for 5/min),
+// burst is the burst allowance, and cleanupInterval controls how often stale
+// entries are purged from the in-memory map.
+func IPRateLimit(r rate.Limit, burst int, cleanupInterval time.Duration) func(http.Handler) http.Handler {
+	var mu sync.Mutex
+	visitors := make(map[string]*ipLimiterEntry)
+
+	// Background goroutine: evict entries not seen in 2x cleanupInterval.
+	go func() {
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-2 * cleanupInterval)
+			mu.Lock()
+			for ip, e := range visitors {
+				if e.lastSeen.Before(cutoff) {
+					delete(visitors, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	limiterFor := func(ip string) *rate.Limiter {
+		mu.Lock()
+		defer mu.Unlock()
+		e, ok := visitors[ip]
+		if !ok {
+			e = &ipLimiterEntry{limiter: rate.NewLimiter(r, burst)}
+			visitors[ip] = e
+		}
+		e.lastSeen = time.Now()
+		return e.limiter
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// Use just the host portion of RemoteAddr; ignore port.
+			ip, _, err := net.SplitHostPort(req.RemoteAddr)
+			if err != nil {
+				ip = req.RemoteAddr
+			}
+			if !limiterFor(ip).Allow() {
+				writeError(w, http.StatusTooManyRequests, "too many requests")
+				return
+			}
+			next.ServeHTTP(w, req)
+		})
 	}
 }
 

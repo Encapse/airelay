@@ -2,10 +2,12 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/airelay/airelay/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/time/rate"
 )
 
 // NewServer wires all handlers and returns (*http.Server, *http.ServeMux).
@@ -23,10 +25,12 @@ func NewServer(db *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) (*http.S
 	models := NewModelsHandler(db)
 
 	authed := RequireAuth(cfg.JWTSecret)
+	// 10 req/min burst=10 per IP on auth endpoints; evict stale entries every minute.
+	authRate := IPRateLimit(rate.Every(6*time.Second), 10, time.Minute)
 
-	// Auth — no middleware on signup/login
-	mux.HandleFunc("POST /v1/auth/signup", auth.Signup)
-	mux.HandleFunc("POST /v1/auth/login", auth.Login)
+	// Auth — rate-limited but no JWT required
+	mux.Handle("POST /v1/auth/signup", authRate(http.HandlerFunc(auth.Signup)))
+	mux.Handle("POST /v1/auth/login", authRate(http.HandlerFunc(auth.Login)))
 	mux.Handle("GET /v1/auth/me", chain(http.HandlerFunc(auth.Me), authed))
 
 	// Projects
