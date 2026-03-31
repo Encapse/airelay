@@ -13,13 +13,14 @@ const dlqCap = 50_000
 
 // DLQ is an in-memory dead letter queue for usage events that failed Postgres writes.
 type DLQ struct {
-	mu    sync.Mutex
-	queue []UsageEvent
-	db    *pgxpool.Pool
+	mu      sync.Mutex
+	queue   []UsageEvent
+	db      *pgxpool.Pool
+	writeFn func(context.Context, *pgxpool.Pool, UsageEvent) error // injectable for tests
 }
 
 func NewDLQ(db *pgxpool.Pool) *DLQ {
-	d := &DLQ{db: db}
+	d := &DLQ{db: db, writeFn: writeUsageEvent}
 	go d.retryLoop()
 	return d
 }
@@ -54,9 +55,12 @@ func (d *DLQ) retryLoop() {
 		cancel()
 
 		d.mu.Lock()
-		// Preserve events enqueued while the retry was in flight by prepending
-		// failed events before any newly arrived events (d.queue[len(batch):]).
-		newlyEnqueued := d.queue[len(batch):]
+		// Preserve events enqueued while the retry was in flight.
+		// Use min(len(batch), len(d.queue)) as the cutoff: if the queue was at cap
+		// during the retry, Enqueue's drop path (d.queue = d.queue[1:]) can shrink
+		// len(d.queue) below len(batch), causing a panic without this guard.
+		cutoff := min(len(batch), len(d.queue))
+		newlyEnqueued := d.queue[cutoff:]
 		d.queue = append(failed, newlyEnqueued...)
 		d.mu.Unlock()
 
@@ -72,7 +76,7 @@ func (d *DLQ) retryLoop() {
 func (d *DLQ) flushBatch(ctx context.Context, batch []UsageEvent) []UsageEvent {
 	var failed []UsageEvent
 	for _, e := range batch {
-		if err := writeUsageEvent(ctx, d.db, e); err != nil {
+		if err := d.writeFn(ctx, d.db, e); err != nil {
 			failed = append(failed, e)
 		}
 	}
