@@ -9,6 +9,26 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// isExpiredSpendKey reports whether key represents a spend key for a period
+// other than today or this month. today is "YYYY-MM-DD", thisMonth is "YYYY-MM".
+func isExpiredSpendKey(key, today, thisMonth string) bool {
+	// key format: spend:{project_id}:daily:YYYY-MM-DD or spend:{project_id}:monthly:YYYY-MM
+	parts := strings.Split(key, ":")
+	if len(parts) < 4 {
+		return false
+	}
+	period := parts[2]
+	value := parts[3]
+	switch period {
+	case "daily":
+		return value != today
+	case "monthly":
+		return value != thisMonth
+	default:
+		return false
+	}
+}
+
 // RunTTLSweep deletes expired Redis spend keys (prior day and prior month periods).
 // Current day and current month keys are preserved.
 func RunTTLSweep(ctx context.Context, rdb *redis.Client) {
@@ -27,23 +47,7 @@ func RunTTLSweep(ctx context.Context, rdb *redis.Client) {
 			break
 		}
 		for _, key := range keys {
-			// key format: spend:{project_id}:daily:YYYY-MM-DD or spend:{project_id}:monthly:YYYY-MM
-			parts := strings.Split(key, ":")
-			if len(parts) < 4 {
-				continue
-			}
-			period := parts[2]
-			value := parts[3]
-			switch period {
-			case "daily":
-				if value == today {
-					continue
-				}
-			case "monthly":
-				if value == thisMonth {
-					continue
-				}
-			default:
+			if !isExpiredSpendKey(key, today, thisMonth) {
 				continue
 			}
 			rdb.Del(ctx, key)

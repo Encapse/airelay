@@ -60,7 +60,7 @@ func RunReconcile(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client) {
 			if dbSum == 0 {
 				continue
 			}
-			drift := abs((redisVal - dbSum) / dbSum)
+			drift := driftFraction(redisVal, dbSum)
 			if drift > 0.20 {
 				log.Printf("ALERT reconcile: project %s %s drift %.0f%% (redis=%.6f db=%.6f)",
 					projectID, p.period, drift*100, redisVal, dbSum)
@@ -80,4 +80,12 @@ func abs(f float64) float64 {
 		return -f
 	}
 	return f
+}
+
+// driftFraction returns |redis - db| / db. Returns 0 if db == 0 (no spend recorded).
+func driftFraction(redis, db float64) float64 {
+	if db == 0 {
+		return 0
+	}
+	return abs((redis - db) / db)
 }
