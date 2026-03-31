@@ -240,3 +240,60 @@ func TestIntegration_UsageEventWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, count, "usage event should be written to Postgres")
 }
+
+func TestIntegration_BudgetNoBudgetsConfigured(t *testing.T) {
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, requireEnv(t, "DATABASE_URL"))
+	require.NoError(t, err)
+	defer pool.Close()
+	rdb, err := redisclient.Connect(requireEnv(t, "REDIS_URL"))
+	require.NoError(t, err)
+	defer rdb.Close()
+
+	// A project with no budget rows should never be blocked.
+	var userID, projectID uuid.UUID
+	pool.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, plan)
+		 VALUES ('integration-nobudget@airelay.dev', 'x', 'pro')
+		 ON CONFLICT (email) DO UPDATE SET plan='pro'
+		 RETURNING id`,
+	).Scan(&userID)
+	pool.QueryRow(ctx,
+		`INSERT INTO projects (user_id, name, slug)
+		 VALUES ($1, 'No Budget Project', 'integration-test-nobudget')
+		 ON CONFLICT (slug) DO UPDATE SET name='No Budget Project'
+		 RETURNING id`,
+		userID,
+	).Scan(&projectID)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM projects WHERE id=$1`, projectID)
+		pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
+	})
+
+	checker := proxy.NewBudgetChecker(pool, rdb)
+	result, err := checker.CheckBudgets(ctx, projectID)
+	require.NoError(t, err)
+	require.False(t, result.Blocked, "project with no budgets should never be blocked")
+}
+
+func TestIntegration_RecordSpendSetsTTL(t *testing.T) {
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, requireEnv(t, "DATABASE_URL"))
+	require.NoError(t, err)
+	defer pool.Close()
+	rdb, err := redisclient.Connect(requireEnv(t, "REDIS_URL"))
+	require.NoError(t, err)
+	defer rdb.Close()
+
+	projectID := uuid.New()
+	spendKey := proxy.SpendKey(projectID, "daily", time.Now().UTC())
+	rdb.Del(ctx, spendKey) // ensure clean state
+	t.Cleanup(func() { rdb.Del(context.Background(), spendKey) })
+
+	checker := proxy.NewBudgetChecker(pool, rdb)
+	checker.RecordSpend(ctx, projectID, models.PeriodDaily, 0.001)
+
+	// Key must exist with a positive TTL — never TTL=-1 (no expiry).
+	ttl := rdb.TTL(ctx, spendKey).Val()
+	require.Positive(t, int64(ttl), "RecordSpend must set a positive TTL on the spend key")
+}
