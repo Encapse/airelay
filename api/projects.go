@@ -115,11 +115,27 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Plan limit check
 	lim := Limits(claims.Plan)
+
+	// Wrap count-check + insert in a transaction with a per-user advisory lock to
+	// prevent the TOCTOU race where two concurrent requests both read count=0 and
+	// both insert, exceeding the plan limit.
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	if lim.MaxProjects > 0 {
+		// Advisory lock serialises creates for this user; released automatically at tx end.
+		if _, err := tx.Exec(r.Context(),
+			`SELECT pg_advisory_xact_lock(hashtext($1::text)::bigint)`, claims.UserID.String()); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not acquire lock")
+			return
+		}
 		var count int
-		h.db.QueryRow(r.Context(),
+		tx.QueryRow(r.Context(),
 			`SELECT COUNT(*) FROM projects WHERE user_id=$1 AND archived_at IS NULL`,
 			claims.UserID,
 		).Scan(&count)
@@ -133,12 +149,16 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	slug := generateSlug(req.Name)
 	var projectID uuid.UUID
 	var createdAt time.Time
-	err := h.db.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`INSERT INTO projects (user_id, name, slug) VALUES ($1,$2,$3) RETURNING id, created_at`,
 		claims.UserID, req.Name, slug,
 	).Scan(&projectID, &createdAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create project")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

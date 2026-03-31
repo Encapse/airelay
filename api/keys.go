@@ -75,12 +75,26 @@ func (h *KeysHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Plan limit check
 	claims := ClaimsFromContext(r.Context())
 	lim := Limits(claims.Plan)
+
+	// Wrap count-check + insert in a transaction with a per-project advisory lock.
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	if lim.MaxKeys > 0 {
+		// Lock on project ID to serialise concurrent key creates for the same project.
+		if _, err := tx.Exec(r.Context(),
+			`SELECT pg_advisory_xact_lock(hashtext($1::text)::bigint)`, projectID.String()); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not acquire lock")
+			return
+		}
 		var count int
-		h.db.QueryRow(r.Context(),
+		tx.QueryRow(r.Context(),
 			`SELECT COUNT(*) FROM api_keys WHERE project_id=$1 AND revoked_at IS NULL`,
 			projectID,
 		).Scan(&count)
@@ -94,13 +108,17 @@ func (h *KeysHandler) Create(w http.ResponseWriter, r *http.Request) {
 	fullKey, prefix, keyHash := proxy.GenerateKey()
 	var keyID uuid.UUID
 	var createdAt time.Time
-	err := h.db.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`INSERT INTO api_keys (project_id, key_hash, key_prefix, name)
 		 VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
 		projectID, keyHash, prefix, req.Name,
 	).Scan(&keyID, &createdAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create key")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit")
 		return
 	}
 	// Full key returned once only — never stored in plaintext
