@@ -2,10 +2,10 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/airelay/airelay/internal/budget"
 	"github.com/airelay/airelay/internal/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,7 +58,7 @@ func (h *BudgetHandler) Get(w http.ResponseWriter, r *http.Request) {
 		b.ID = id.String()
 		b.Period = string(period)
 		if h.redis != nil {
-			key := spendKey(projectID, string(period), now)
+			key := budget.SpendKey(projectID, string(period), now)
 			val, _ := h.redis.Get(r.Context(), key).Float64()
 			b.CurrentSpend = val
 		}
@@ -131,13 +131,3 @@ func (h *BudgetHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// spendKey mirrors the proxy's SpendKey format for reading Redis spend.
-func spendKey(projectID uuid.UUID, period string, t time.Time) string {
-	switch period {
-	case "daily":
-		return fmt.Sprintf("spend:%s:daily:%s", projectID, t.Format("2006-01-02"))
-	case "monthly":
-		return fmt.Sprintf("spend:%s:monthly:%s", projectID, t.Format("2006-01"))
-	}
-	return fmt.Sprintf("spend:%s:%s", projectID, period)
-}

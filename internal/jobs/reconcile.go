@@ -2,10 +2,10 @@ package jobs
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
+	"github.com/airelay/airelay/internal/budget"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -25,17 +25,14 @@ func RunReconcile(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client) {
 	periods := []struct {
 		period      string
 		periodStart time.Time
-		keyFmt      string
 	}{
 		{
 			"daily",
 			time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC),
-			"daily:" + now.Format("2006-01-02"),
 		},
 		{
 			"monthly",
 			time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC),
-			"monthly:" + now.Format("2006-01"),
 		},
 	}
 
@@ -45,7 +42,7 @@ func RunReconcile(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client) {
 			continue
 		}
 		for _, p := range periods {
-			redisKey := fmt.Sprintf("spend:%s:%s", projectID, p.keyFmt)
+			redisKey := budget.SpendKey(projectID, p.period, now)
 			redisVal, err := rdb.Get(ctx, redisKey).Float64()
 			if err == redis.Nil {
 				continue // no spend recorded yet
@@ -69,7 +66,8 @@ func RunReconcile(ctx context.Context, db *pgxpool.Pool, rdb *redis.Client) {
 					projectID, p.period, drift*100, redisVal, dbSum)
 			}
 			if drift > 0.05 {
-				rdb.Set(ctx, redisKey, dbSum, 0)
+				// Use proper TTL — TTL=0 would leave the key without expiry.
+				rdb.Set(ctx, redisKey, dbSum, budget.SpendKeyTTL(p.period, now))
 				log.Printf("reconcile: corrected %s %s redis=%.6f → db=%.6f (drift %.1f%%)",
 					projectID, p.period, redisVal, dbSum, drift*100)
 			}
