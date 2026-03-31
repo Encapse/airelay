@@ -1,9 +1,9 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -73,16 +73,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap request body to 100 MiB to prevent memory exhaustion from huge payloads.
-	// Applied before peekModel so both reads (peek + forward) see the limit.
+	// Read request body once — cap at 100 MiB to prevent memory exhaustion.
+	// The same slice is passed to Forward to avoid a second allocation.
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+	reqBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeJSON(w, http.StatusBadRequest, "could not read request body")
+		}
+		return
+	}
 
-	// Read model from body before Forward consumes it
-	model := peekModel(r)
+	model := extractModel(reqBody)
 	metadata := parseMetadata(r.Header.Get("X-AIRelay-Meta"))
 
 	providerBase := ProviderURLs[provider]
-	fwdResult, err := Forward(w, r, providerBase, lookup.PlainKey, provider, pathSuffix)
+	fwdResult, err := Forward(w, r, reqBody, providerBase, lookup.PlainKey, provider, pathSuffix)
 	if err != nil {
 		log.Printf("forward error for project %s: %v", lookup.ProjectID, err)
 		return
@@ -117,13 +126,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// peekModel reads the model field from the request JSON body without consuming it.
-func peekModel(r *http.Request) string {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "unknown"
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
+// extractModel parses the model field from a JSON request body.
+// Returns "unknown" if the field is absent or the body is not valid JSON.
+func extractModel(body []byte) string {
 	var payload struct {
 		Model string `json:"model"`
 	}

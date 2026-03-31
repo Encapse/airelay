@@ -32,20 +32,18 @@ var proxyHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 // Forward proxies the request to the provider and streams the response to w.
 // It extracts token usage from the final SSE chunk for cost accounting.
+// body is the pre-read request body; the caller is responsible for reading it
+// once and passing the same slice here to avoid double allocation.
 func Forward(
 	w http.ResponseWriter,
 	r *http.Request,
+	body []byte,
 	providerBase string,
 	providerKey string,
 	provider models.AIProvider,
 	pathSuffix string,
 ) (*ForwardResult, error) {
 	start := time.Now()
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
-	}
 
 	upstreamURL := providerBase + pathSuffix
 	if r.URL.RawQuery != "" {
