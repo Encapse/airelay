@@ -9,30 +9,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// RunPartition ensures next month's usage_events partition exists.
+// RunPartition ensures the current and next month's usage_events partitions exist.
+// Creating both guards against a cold deploy landing on a month with no partition.
 // Safe to call multiple times — uses CREATE TABLE IF NOT EXISTS.
 func RunPartition(ctx context.Context, db *pgxpool.Pool) {
 	now := time.Now().UTC()
-	nextMonth := now.AddDate(0, 1, 0)
-	year := nextMonth.Year()
-	month := nextMonth.Month()
+	for _, t := range []time.Time{now, now.AddDate(0, 1, 0)} {
+		if err := ensurePartition(ctx, db, t); err != nil {
+			log.Printf("partition: %v", err)
+		}
+	}
+}
 
-	partStart := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-	partEnd := partStart.AddDate(0, 1, 0)
-
-	tableName := fmt.Sprintf("usage_events_%04d_%02d", year, int(month))
+func ensurePartition(ctx context.Context, db *pgxpool.Pool, t time.Time) error {
+	// Normalise to first of month
+	start := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+	tableName := partitionTableName(t)
 	sql := fmt.Sprintf(
 		`CREATE TABLE IF NOT EXISTS %s PARTITION OF usage_events
 		 FOR VALUES FROM ('%s') TO ('%s')`,
 		tableName,
-		partStart.Format("2006-01-02"),
-		partEnd.Format("2006-01-02"),
+		start.Format("2006-01-02"),
+		end.Format("2006-01-02"),
 	)
-	_, err := db.Exec(ctx, sql)
-	if err != nil {
-		log.Printf("partition: could not create %s: %v", tableName, err)
-		return
+	if _, err := db.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("could not create %s: %w", tableName, err)
 	}
 	log.Printf("partition: ensured %s exists (%s to %s)",
-		tableName, partStart.Format("2006-01"), partEnd.Format("2006-01"))
+		tableName, start.Format("2006-01"), end.Format("2006-01"))
+	return nil
+}
+
+// partitionTableName returns the table name for the month containing t.
+func partitionTableName(t time.Time) string {
+	return fmt.Sprintf("usage_events_%04d_%02d", t.Year(), int(t.Month()))
 }
