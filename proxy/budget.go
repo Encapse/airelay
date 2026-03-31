@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/airelay/airelay/internal/budget"
@@ -27,12 +28,24 @@ type BudgetResult struct {
 
 // BudgetChecker checks and records project spend against configured budgets.
 type BudgetChecker struct {
-	db    *pgxpool.Pool
-	redis *redis.Client
+	db           *pgxpool.Pool
+	redis        *redis.Client
+	budgetCache  sync.Map // projectID string → cachedBudgets
+}
+
+type cachedBudgets struct {
+	budgets   []models.Budget
+	expiresAt time.Time
 }
 
 func NewBudgetChecker(db *pgxpool.Pool, rdb *redis.Client) *BudgetChecker {
 	return &BudgetChecker{db: db, redis: rdb}
+}
+
+// InvalidateBudgetCache removes the cached budget config for a project.
+// Call this after any budget upsert or delete so changes take effect immediately.
+func (b *BudgetChecker) InvalidateBudgetCache(projectID uuid.UUID) {
+	b.budgetCache.Delete(projectID.String())
 }
 
 // CheckBudgets returns Blocked=true if any hard-limit budget has been exceeded.
@@ -80,7 +93,28 @@ func (b *BudgetChecker) RecordSpend(ctx context.Context, projectID uuid.UUID, pe
 	}
 }
 
+const budgetCacheTTL = 2 * time.Minute
+
+// loadBudgets returns budget config for a project, using a 2-minute in-memory cache.
+// Budget configs change rarely; 2-minute staleness is acceptable.
+// Call InvalidateBudgetCache after any budget mutation to force immediate refresh.
 func (b *BudgetChecker) loadBudgets(ctx context.Context, projectID uuid.UUID) ([]models.Budget, error) {
+	key := projectID.String()
+	if v, ok := b.budgetCache.Load(key); ok {
+		c := v.(cachedBudgets)
+		if time.Now().Before(c.expiresAt) {
+			return c.budgets, nil
+		}
+	}
+	bgs, err := b.fetchBudgetsFromDB(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	b.budgetCache.Store(key, cachedBudgets{budgets: bgs, expiresAt: time.Now().Add(budgetCacheTTL)})
+	return bgs, nil
+}
+
+func (b *BudgetChecker) fetchBudgetsFromDB(ctx context.Context, projectID uuid.UUID) ([]models.Budget, error) {
 	rows, err := b.db.Query(ctx,
 		`SELECT id, project_id, amount_usd, period, hard_limit, created_at
 		 FROM budgets WHERE project_id = $1`, projectID)
